@@ -8,15 +8,47 @@ import random
 import os
 
 
-def load_and_sample_data(raw_filename='ratings.csv', sample_filename='ratings_cleaned_sampled.csv', seed=42):
+def load_data(raw_filename='ratings.csv', sample_filename='ratings_cleaned_sampled.csv', seed=42, table_name=None):
     """
     Loads raw data, cleans it (1-5 scale), and creates a deterministic sample.
+    If table_name is provided, it attempts to load that specific file from standard locations instead.
     Sample constraints: 1M ratings, from subset of 100k users and 1k items.
     """
+    # Locate utils.py directory to find relative paths robustly
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    section_root = os.path.dirname(current_dir) # Parent of 'code' folder i.e. SECTION1_DimensionalityReduction
+
+    # 0. Direct Table Loading (if requested)
+    if table_name:
+        # Define search paths for the requested table
+        possible_paths_specific = [
+            os.path.join('results', 'tables', table_name),
+            os.path.join('..', 'results', 'tables', table_name),
+            os.path.join('data', 'ml-20m', table_name),
+            os.path.join('..', 'data', 'ml-20m', table_name),
+            # Robust paths relative to utils.py
+            os.path.join(section_root, 'results', 'tables', table_name),
+            os.path.join(section_root, 'data', 'ml-20m', table_name),
+            table_name
+        ]
+        
+        for path in possible_paths_specific:
+            if os.path.exists(path):
+                print(f" Found requested table at: {path}")
+                try:
+                    return pd.read_csv(path)
+                except Exception as e:
+                    print(f" Error loading {path}: {e}")
+                    return None
+        
+        print(f" Error: Could not find requested table '{table_name}' in standard locations.")
+        return None
+
     # 1. Search for Sampled File First
     possible_paths_sample = [
         os.path.join('data', 'ml-20m', sample_filename),
-        os.path.join('..', 'data', 'ml-20m', sample_filename)
+        os.path.join('..', 'data', 'ml-20m', sample_filename),
+        os.path.join(section_root, 'data', 'ml-20m', sample_filename)
     ]
     for path in possible_paths_sample:
         if os.path.exists(path):
@@ -27,7 +59,8 @@ def load_and_sample_data(raw_filename='ratings.csv', sample_filename='ratings_cl
     print(" Sample not found. Loading and processing raw data...")
     possible_paths_raw = [
         os.path.join('data', 'ml-20m', raw_filename),
-        os.path.join('..', 'data', 'ml-20m', raw_filename)
+        os.path.join('..', 'data', 'ml-20m', raw_filename),
+        os.path.join(section_root, 'data', 'ml-20m', raw_filename)
     ]
     
     df = None
