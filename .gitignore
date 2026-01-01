@@ -1,0 +1,42 @@
+<<<<<<< HEAD
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# --- Virtual Environments ---
+venv/
+env/
+.env
+.venv/
+
+# --- IDEs & OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Large Data & Models (Important!) ---
+# Ignore these to prevent large pushes from failing
+*.csv
+*.xlsx
+*.json
+*.pkl
+*.h5
+*.pt
+*.pth
+*.zip
+*.tar.gz
+*.7z
+
+# If you have specific data folders, ignore them entirely:
+data/
+datasets/
+models/
+=======
+data/
+>>>>>>> 889a2b75e47245972ac9919f22ca8cebfb89b645
