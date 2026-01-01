@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 from scipy.sparse import coo_matrix
+import matplotlib.pyplot as plt
+import random
 
 # --- 1. LOCATE THE RESULTS FOLDER ---
 import os
@@ -233,7 +235,7 @@ def Mean(df, group_col, target_col):
     
     return results_df
 
-def get_random_user_and_check(df, condition_mask, label, condition_text, storage_list):
+def get_random_user_and_check(df, condition_mask, label, condition_text, storage_list, seed=42):
     """
     Selects a random user from df based on condition_mask, prints verification, 
     and appends details to storage_list.
@@ -245,7 +247,7 @@ def get_random_user_and_check(df, condition_mask, label, condition_text, storage
         return None
     
     # Random selection
-    selected_row = subset.sample(n=1)
+    selected_row = subset.sample(n=1, random_state=seed)
     
     # Extract details
     uid = selected_row['userId'].values[0]
