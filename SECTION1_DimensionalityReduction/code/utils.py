@@ -1,8 +1,11 @@
 import pandas as pd
 import numpy as np
 from scipy.sparse import coo_matrix
+from scipy import sparse
 import matplotlib.pyplot as plt
 import random
+import time
+from sklearn.linear_model import LinearRegression
 
 # --- 1. LOCATE THE RESULTS FOLDER ---
 import os
