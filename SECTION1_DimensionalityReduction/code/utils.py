@@ -1,3 +1,6 @@
+# Group 17: 
+# Eyad Medhat 221100279 / Hady Aly 221101190 / Mohamed Mahfouz 221101743 / Omar Mady 221100745
+
 import pandas as pd
 import numpy as np
 from scipy.sparse import coo_matrix
@@ -13,11 +16,14 @@ from scipy.linalg import eigh
 import os
 
 
-def load_data(raw_filename='ratings.csv', sample_filename='ratings_cleaned_sampled.csv', seed=42, table_name=None):
+def load_data(raw_filename='ratings.csv', sample_filename='ratings_cleaned_sampled.csv', table_name=None):
     """
-    Loads raw data, cleans it (1-5 scale), and creates a deterministic sample.
-    If table_name is provided, it attempts to load that specific file from standard locations instead.
-    Sample constraints: 1M ratings, from subset of 100k users and 1k items.
+    Loads data:
+    1. If table_name is provided, loads that specific table.
+    2. Checks for sample_filename ('ratings_cleaned_sampled.csv'). If found, loads it.
+    3. If not found, loads raw_filename ('ratings.csv'), cleans it (1-5 scale), and returns full dataset.
+       Note: This function IN NO LONGER creates the sampled dataset automatically. 
+       Use create_and_save_cleaned_ratings() for that.
     """
     # Locate utils.py directory to find relative paths robustly
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -85,57 +91,8 @@ def load_data(raw_filename='ratings.csv', sample_filename='ratings_cleaned_sampl
         df.drop(columns=['timestamp'], inplace=True)
     df['rating'] = df['rating'].clip(lower=1, upper=5).round().astype(int)
     
-    # 4. Deterministic Sampling
-    print(f" Sampling Data (Seed {seed})...")
-    np.random.seed(seed)
-    
-    # Filter for top 1k items (by popularity/count) to ensure density
-    top_items = df['movieId'].value_counts().nlargest(1000).index
-    df_filtered_items = df[df['movieId'].isin(top_items)]
-    
-    # Filter for random 100k users from those who rated top items
-    available_users = df_filtered_items['userId'].unique()
-    if len(available_users) > 109000:
-        selected_users = np.random.choice(available_users, 109000, replace=False)
-        df_filtered_users = df_filtered_items[df_filtered_items['userId'].isin(selected_users)]
-    else:
-        df_filtered_users = df_filtered_items
-        
-    # Sample 1M ratings
-    if len(df_filtered_users) > 1000000:
-        df_sampled = df_filtered_users.sample(n=1000000, random_state=seed)
-    else:
-        df_sampled = df_filtered_users
-        
-    print(f" Sampled shape: {df_sampled.shape} (Users: {df_sampled['userId'].nunique()}, Items: {df_sampled['movieId'].nunique()})")
-    
-    # Save for future use
-    # Save for future use - Enforce saving to data/ml-20m location if possible
-    # We prefer the location where raw data typically lives
-    
-    # Try to resolve the 'data/ml-20m' path relative to current or parent
-    target_subdir = os.path.join('data', 'ml-20m')
-    
-    if os.path.exists(target_subdir):
-        save_dir = target_subdir
-    elif os.path.exists(os.path.join('..', target_subdir)):
-        save_dir = os.path.join('..', target_subdir)
-    else:
-        # Fallback: create it if 'data' exists, or just use '.'
-        if os.path.exists('data'):
-             save_dir = target_subdir
-             os.makedirs(save_dir, exist_ok=True)
-        else:
-             save_dir = '.'
-
-    save_path = os.path.join(save_dir, sample_filename)
-    try:
-        df_sampled.to_csv(save_path, index=False)
-        print(f" Saved sampled data to: {save_path}")
-    except Exception as e:
-        print(f" Warning: Could not save sampled data: {e}")
-        
-    return df_sampled
+    print(" Data cleaned (1-5 scale, timestamp removed). Returning full dataset.")
+    return df
 
 def clean_data(df):
     """Standardizes ratings (1-5) and removes timestamp"""
@@ -200,17 +157,14 @@ def ensure_results_folders():
              
     return results_path
 
-def create_and_save_cleaned_ratings(raw_filename='ratings.csv', output_filename='ratings_cleaned.csv'):
+def create_and_save_cleaned_ratings(raw_filename='ratings.csv',cleaned_filename='ratings_cleaned.csv',sample_filename='ratings_cleaned_sampled.csv',seed=42,n_users=100000,n_items=1000,n_ratings=1000000):
     """
-    Loads proper raw ratings, cleans them (1-5 scale, int), removes timestamp,
-    and saves the full cleaned version to data/ml-20m/.
-    
-    Returns:
-        pd.DataFrame: The cleaned dataframe.
+    Loads raw ratings, cleans them, saves 'ratings_cleaned.csv'.
+    Then creates a deterministic sample and saves 'ratings_cleaned_sampled.csv'.
     """
     section_root = get_section_root()
     
-    # 1. Locate Raw Data
+    # 1. Locate Raw Data (to determine save location)
     possible_paths_raw = [
         os.path.join(section_root, 'data', 'ml-20m', raw_filename),
         os.path.join('data', 'ml-20m', raw_filename),
@@ -223,6 +177,25 @@ def create_and_save_cleaned_ratings(raw_filename='ratings.csv', output_filename=
             raw_path = path
             break
             
+    # Determine save directory
+    if raw_path:
+        save_dir = os.path.dirname(raw_path)
+    else:
+        # Fallback if raw not found, but maybe sample exists?
+        # We try standard locations
+        save_dir = os.path.join(section_root, 'data', 'ml-20m')
+
+    # 1.5 Check if files already exist
+    cleaned_path = os.path.join(save_dir, cleaned_filename)
+    sample_path = os.path.join(save_dir, sample_filename)
+    
+    if os.path.exists(sample_path) and os.path.exists(cleaned_path):
+        print(f"Files already exist in {save_dir}. Skipping recreation.")
+        try:
+            return pd.read_csv(sample_path)
+        except Exception as e:
+            print(f"Error loading existing sample: {e}. Recreating...")
+
     if raw_path is None:
         print(f"Error: Could not find raw file '{raw_filename}'")
         return None
@@ -236,18 +209,46 @@ def create_and_save_cleaned_ratings(raw_filename='ratings.csv', output_filename=
         df.drop(columns=['timestamp'], inplace=True)
     df['rating'] = df['rating'].clip(lower=1, upper=5).round().astype(int)
     
-    # 3. Save
-    # We want to save to data/ml-20m inside the section root usually, or where we found the raw data
-    save_dir = os.path.dirname(raw_path)
-    save_path = os.path.join(save_dir, output_filename)
-    
+    # 3. Save Cleaned Data
     try:
-        df.to_csv(save_path, index=False)
-        print(f"Saved cleaned ratings to: {save_path}")
+        df.to_csv(cleaned_path, index=False)
+        print(f"Saved cleaned ratings to: {cleaned_path}")
     except Exception as e:
-        print(f"Error saving file: {e}")
+        print(f"Error saving cleaned file: {e}")
+
+    # 4. Deterministic Sampling
+    print(f"Sampling Data (Seed {seed})...")
+    np.random.seed(seed)
+    
+    # Filter for top n_items items
+    top_items = df['movieId'].value_counts().nlargest(n_items).index
+    df_filtered_items = df[df['movieId'].isin(top_items)]
+    
+    # Filter for random n_users
+    available_users = df_filtered_items['userId'].unique()
+    
+    if len(available_users) > n_users:
+        selected_users = np.random.choice(available_users, n_users, replace=False)
+        df_filtered_users = df_filtered_items[df_filtered_items['userId'].isin(selected_users)]
+    else:
+        df_filtered_users = df_filtered_items
         
-    return df
+    # Sample n_ratings
+    if len(df_filtered_users) > n_ratings:
+        df_sampled = df_filtered_users.sample(n=n_ratings, random_state=seed)
+    else:
+        df_sampled = df_filtered_users
+        
+    print(f"Sampled shape: {df_sampled.shape} (Users: {df_sampled['userId'].nunique()}, Items: {df_sampled['movieId'].nunique()})")
+    
+    # 5. Save Sampled Data
+    try:
+        df_sampled.to_csv(sample_path, index=False)
+        print(f"Saved sampled data to: {sample_path}")
+    except Exception as e:
+        print(f"Error saving sampled file: {e}")
+        
+    return df_sampled
 
 # Initialize results root globally using the new robust function
 results_root = ensure_results_folders()
