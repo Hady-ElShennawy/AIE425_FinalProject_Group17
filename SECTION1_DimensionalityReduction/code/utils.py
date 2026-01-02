@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import random
 import time
 from sklearn.linear_model import LinearRegression
+from scipy.linalg import eigh
+
 
 # --- 1. LOCATE THE RESULTS FOLDER ---
 import os
@@ -93,8 +95,8 @@ def load_data(raw_filename='ratings.csv', sample_filename='ratings_cleaned_sampl
     
     # Filter for random 100k users from those who rated top items
     available_users = df_filtered_items['userId'].unique()
-    if len(available_users) > 100000:
-        selected_users = np.random.choice(available_users, 100000, replace=False)
+    if len(available_users) > 109000:
+        selected_users = np.random.choice(available_users, 109000, replace=False)
         df_filtered_users = df_filtered_items[df_filtered_items['userId'].isin(selected_users)]
     else:
         df_filtered_users = df_filtered_items
@@ -161,17 +163,94 @@ def load_result_csv(filename):
             return None
     return None
 
-# Check if 'results' is in the current folder (Root) or one level up (Subfolder)
-if os.path.exists("results"):
-    results_root = "results"
-elif os.path.exists("../results"):
-    results_root = "../results"
-else:
-    # Fallback: Create it in current dir if it's missing
-    results_root = "results"
-    os.makedirs(results_root, exist_ok=True)
-
 # --- 2. DEFINE SAVING FUNCTIONS ---
+def get_section_root():
+    """
+    Returns the absolute path to the section root directory (SECTION1_DimensionalityReduction).
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(current_dir)
+
+def ensure_results_folders():
+    """
+    Ensures that the 'results', 'results/plots', and 'results/tables' folders exist 
+    inside the SECTION1_DimensionalityReduction directory.
+    
+    Returns:
+        str: Path to the results folder.
+    """
+    section_root = get_section_root()
+    results_path = os.path.join(section_root, "results")
+    
+    # Check/Create results
+    if not os.path.exists(results_path):
+        os.makedirs(results_path)
+        print(f"Created results folder at: {results_path}")
+    else:
+        print(f"Results folder exists at: {results_path}")
+        
+    # Check/Create subfolders
+    for sub in ["plots", "tables"]:
+        sub_path = os.path.join(results_path, sub)
+        if not os.path.exists(sub_path):
+            os.makedirs(sub_path)
+            print(f"Created subfolder: {sub_path}")
+        else:
+             print(f"Subfolder exists: {sub_path}")
+             
+    return results_path
+
+def create_and_save_cleaned_ratings(raw_filename='ratings.csv', output_filename='ratings_cleaned.csv'):
+    """
+    Loads proper raw ratings, cleans them (1-5 scale, int), removes timestamp,
+    and saves the full cleaned version to data/ml-20m/.
+    
+    Returns:
+        pd.DataFrame: The cleaned dataframe.
+    """
+    section_root = get_section_root()
+    
+    # 1. Locate Raw Data
+    possible_paths_raw = [
+        os.path.join(section_root, 'data', 'ml-20m', raw_filename),
+        os.path.join('data', 'ml-20m', raw_filename),
+        os.path.join('..', 'data', 'ml-20m', raw_filename)
+    ]
+    
+    raw_path = None
+    for path in possible_paths_raw:
+        if os.path.exists(path):
+            raw_path = path
+            break
+            
+    if raw_path is None:
+        print(f"Error: Could not find raw file '{raw_filename}'")
+        return None
+        
+    print(f"Loading raw data from: {raw_path}")
+    df = pd.read_csv(raw_path)
+    
+    # 2. Clean
+    print("Cleaning data (1-5 scale, removing timestamp)...")
+    if 'timestamp' in df.columns:
+        df.drop(columns=['timestamp'], inplace=True)
+    df['rating'] = df['rating'].clip(lower=1, upper=5).round().astype(int)
+    
+    # 3. Save
+    # We want to save to data/ml-20m inside the section root usually, or where we found the raw data
+    save_dir = os.path.dirname(raw_path)
+    save_path = os.path.join(save_dir, output_filename)
+    
+    try:
+        df.to_csv(save_path, index=False)
+        print(f"Saved cleaned ratings to: {save_path}")
+    except Exception as e:
+        print(f"Error saving file: {e}")
+        
+    return df
+
+# Initialize results root globally using the new robust function
+results_root = ensure_results_folders()
 
 def get_output_path(section_name, subfolder_type):
     """
@@ -503,3 +582,67 @@ def calculate_full_covariance_sparse(centered_df):
     cov_matrix = XtX / (num_users - 1)
     
     return cov_matrix, all_movie_ids
+
+def calculate_mle_covariance(matrix_df):
+    """
+    Calculates the Pairwise Covariance Matrix (MLE).
+    Optimized using matrix operations.
+    """
+    print("Computing MLE Covariance Matrix...")
+    
+    # Calculate Item Means (ignoring NaNs)
+    item_means = matrix_df.mean(axis=0)
+    
+    # Center data: R_ui - Mu_i
+    centered_df = matrix_df - item_means
+    
+    # Fill NaNs with 0 for dot product (0 contributes nothing to sum)
+    X = centered_df.fillna(0).values
+    
+    # Indicator Matrix: 1 if rated, 0 if not
+    I = (~matrix_df.isna()).astype(int).values
+    
+    # Numerator: Sum of products (X.T @ X)
+    # Element (i, j) is Sum((R_ui - mu_i)*(R_uj - mu_j)) for common users
+    numerator = np.dot(X.T, X)
+    
+    # Denominator: Count of intersections (I.T @ I)
+    # Element (i, j) is count of users who rated both i and j
+    denominator = np.dot(I.T, I)
+    
+    # Compute Covariance
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cov_matrix = numerator / denominator
+        cov_matrix[denominator == 0] = 0
+        cov_matrix[np.isnan(cov_matrix)] = 0
+        
+    cov_df = pd.DataFrame(cov_matrix, index=matrix_df.columns, columns=matrix_df.columns)
+    return cov_df, item_means
+
+def get_eigen_pairs(covariance_df):
+    evals, evecs = eigh(covariance_df.values)
+    sorted_indices = np.argsort(evals)[::-1]
+    evals = evals[sorted_indices]
+    evecs = evecs[:, sorted_indices]
+    return evals, evecs
+
+
+def predict_pca(k, matrix_df, item_means, eigenvectors, target_ids):
+    print(f"\n--- PCA with k={k} Components ---")
+    # Center data using standard logic (fill missing with mean -> 0)
+    data_centered = matrix_df.fillna(matrix_df.mean()).values - item_means.values
+    V_k = eigenvectors[:, :k]
+    
+    # Reduced Space
+    U_reduced = np.dot(data_centered, V_k)
+    print(f"Reduced Reduced Dimensional Space Shape: {U_reduced.shape}")
+    
+    results = {}
+    for tid in target_ids:
+        col_idx = matrix_df.columns.get_loc(tid)
+        target_vec = V_k[col_idx, :]
+        preds_centered = np.dot(U_reduced, target_vec)
+        preds = preds_centered + item_means.iloc[col_idx]
+        results[tid] = preds
+        
+    return U_reduced, results
