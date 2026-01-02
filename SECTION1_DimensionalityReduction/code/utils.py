@@ -299,6 +299,7 @@ def save_plot(figure, filename):
         print(f"    Error saving Plot {filename}: {e}")
 
 
+#Statistical Analysis
 
 def Mean(df, group_col, target_col):
 
@@ -400,6 +401,8 @@ def get_random_user_and_check(df, condition_mask, label, condition_text, storage
     })
     
     return uid
+
+#Eyad
 
 def create_user_item_matrix(ratings_df):
     """
@@ -583,10 +586,107 @@ def calculate_full_covariance_sparse(centered_df):
     
     return cov_matrix, all_movie_ids
 
+
+#Mady
+
+def get_top_peers(covariance_df, targets, k_list=[5, 10]):
+    peers_dict = {}
+    
+    for tid in targets:
+        if tid not in covariance_df.index:
+            print(f"Warning: Target {tid} not in covariance matrix.")
+            continue
+            
+        # Get row for target
+        row = covariance_df.loc[tid]
+        
+        # Sort descending by covariance
+        # Drop self
+        sorted_peers = row.drop(tid).sort_values(ascending=False)
+        
+        peers_dict[tid] = {}
+        print(f"\n--- Target {tid} ---")
+        for k in k_list:
+            top_k = sorted_peers.head(k)
+            peers_dict[tid][k] = top_k.index.tolist()
+            print(f"Top {k} Peers: {top_k.index.tolist()}")
+            print(f"Values: {top_k.values}")
+            
+    return peers_dict
+
+
+
+def solve_pca_regression(k, peers_map, centered_df, item_means, target_ids):
+    print(f"\n=== Processing K={k} Peers ===")
+    
+    predictions_all = {}
+    reduced_spaces = {}
+    
+    for tid in target_ids:
+        if tid not in peers_map:
+            continue
+            
+        peers = peers_map[tid][k]
+        print(f"\nTarget: {tid}, Peers: {peers}")
+        
+        # 1. Determine Reduced Dimensional Space
+        # Select columns for peers
+        # Note: centered_df_raw is strictly (User x Item). NaNs are missing ratings.
+        # We fill NaNs with 0.0 (Mean) for the feature matrix to allow regression on all users
+        X_full = centered_df[peers].fillna(0.0)
+        
+        reduced_spaces[tid] = X_full
+        print(f"Reduced Space Shape: {X_full.shape}")
+        
+        # 2. Prepare for Regression
+        # Target Variable (Centered)
+        y_full = centered_df[tid]
+        
+        # Identify Train (Rated) vs Predict (Unrated)
+        train_mask = y_full.notna()
+        predict_mask = y_full.isna()
+        
+        X_train = X_full[train_mask]
+        y_train = y_full[train_mask]
+        
+        X_pred = X_full[predict_mask]
+        
+        print(f"Training Samples: {len(X_train)}, Prediction Samples: {len(X_pred)}")
+        
+        # 3. Train Model
+        if len(X_train) > 0:
+            model = LinearRegression()
+            model.fit(X_train, y_train)
+            
+            # 4. Predict
+            # We predict for MISSING users
+            if len(X_pred) > 0:
+                y_pred_centered = model.predict(X_pred)
+                
+                # Add Mean to get Final Rating
+                target_mean = item_means[tid]
+                y_pred_final = y_pred_centered + target_mean
+                
+                # Store results
+                results_df = pd.DataFrame({
+                    'userId': X_pred.index,
+                    'movieId': tid,
+                    'predicted_rating_mle': y_pred_final
+                })
+                predictions_all[tid] = results_df
+                
+                # Save
+                save_csv(results_df, f"3.3_mle_predictions_k{k}_target_{tid}.csv")
+        else:
+            print("No training data available.")
+            
+    return reduced_spaces, predictions_all
+
 def calculate_mle_covariance(matrix_df):
     """
     Calculates the Pairwise Covariance Matrix (MLE).
-    Optimized using matrix operations.
+    Cov(i, j) = Sum( (R_ui - mu_i)*(R_uj - mu_j) ) / N_common
+    Only common users are used.
     """
     print("Computing MLE Covariance Matrix...")
     
@@ -604,20 +704,23 @@ def calculate_mle_covariance(matrix_df):
     
     # Numerator: Sum of products (X.T @ X)
     # Element (i, j) is Sum((R_ui - mu_i)*(R_uj - mu_j)) for common users
+    print("- Calculating Numerator...")
     numerator = np.dot(X.T, X)
     
     # Denominator: Count of intersections (I.T @ I)
     # Element (i, j) is count of users who rated both i and j
+    print("- Calculating Denominator...")
     denominator = np.dot(I.T, I)
     
     # Compute Covariance
+    print("- Dividing...")
     with np.errstate(divide='ignore', invalid='ignore'):
         cov_matrix = numerator / denominator
         cov_matrix[denominator == 0] = 0
         cov_matrix[np.isnan(cov_matrix)] = 0
         
     cov_df = pd.DataFrame(cov_matrix, index=matrix_df.columns, columns=matrix_df.columns)
-    return cov_df, item_means
+    return cov_df, item_means, centered_df
 
 def get_eigen_pairs(covariance_df):
     evals, evecs = eigh(covariance_df.values)
