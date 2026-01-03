@@ -10,6 +10,16 @@ import random
 import time
 from sklearn.linear_model import LinearRegression
 from scipy.linalg import eigh
+import re
+import nltk
+import os
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.neighbors import NearestNeighbors
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer
+
 
 
 # --- 1. LOCATE THE RESULTS FOLDER ---
@@ -133,7 +143,7 @@ def ensure_results_folders():
         print(f"Results folder exists at: {results_path}")
         
     # Check/Create subfolders
-    for sub in ["plots", "tables"]:
+    for sub in ["tables"]:
         sub_path = os.path.join(results_path, sub)
         if not os.path.exists(sub_path):
             os.makedirs(sub_path)
@@ -194,3 +204,76 @@ def save_plot(figure, filename):
         print(f"    Error saving Plot {filename}: {e}")
 
 
+
+def save_output(data, filename, columns=None, index_label='id'):
+    """
+    Smart save function that handles various data types and saves them as ready-to-use CSVs.
+    
+    Args:
+        data: The data to save (pd.DataFrame, dict, list, or scalar).
+        filename (str): Name of the file (without .csv extension is accurate).
+        columns (list, optional): Column names for list data.
+        index_label (str, optional): Name for the index column when saving dicts.
+    """
+    try:
+        folder_path = os.path.join(results_root, "tables")
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+            
+        if not filename.endswith('.csv'):
+            filename += '.csv'
+            
+        file_path = os.path.join(folder_path, filename)
+        
+        # 1. Handle DataFrame -> Save directly
+        if isinstance(data, pd.DataFrame):
+            # If data has no index name, we might want to keep index=False unless it's meaningful
+            # But specific request said "reusability", so standardizing is good.
+            # If user passed a DF, we assume it's already structured.
+            data.to_csv(file_path, index=False)
+            print(f"    Saved DataFrame: tables/{filename}")
+            
+        # 2. Handle Dictionary -> Convert to DataFrame (Rows=Keys, Cols=Values)
+        elif isinstance(data, dict):
+            # Useful for User Profiles: {uid: [vector]} -> DF with index uid
+            df = pd.DataFrame.from_dict(data, orient='index')
+            df.index.name = index_label
+            # If the values are scalars (e.g. {'k_10': 2.5}), columns will be [0]
+            # If values are lists (vectors), columns will be 0, 1, 2...
+            if columns:
+                df.columns = columns
+            
+            # We save with index=True because the key (e.g. UserID) is crucial
+            df.to_csv(file_path, index=True)
+            print(f"    Saved Dict as CSV: tables/{filename}")
+
+        # 3. Handle List (or List of Lists/Tuples) -> Convert to DataFrame
+        elif isinstance(data, list):
+            # If it's a list of primitives [1, 2, 3] -> Single col
+            # If it's a list of tuples [(item, score), ...] -> Multiple cols
+            
+            # Determine columns if not provided
+            if columns is None:
+                # Try to peek at first element
+                if len(data) > 0 and isinstance(data[0], (tuple, list)):
+                    # Generic names
+                    columns = [f'col_{i}' for i in range(len(data[0]))]
+                else:
+                    columns = ['value']
+            
+            df = pd.DataFrame(data, columns=columns)
+            df.to_csv(file_path, index=False)
+            print(f"    Saved List as CSV: tables/{filename}")
+            
+        # 4. Handle Scalar (float, int, str) -> Single row DataFrame
+        elif isinstance(data, (int, float, str, np.number)):
+            # Create a simple DF with one row
+            df = pd.DataFrame({'value': [data]})
+            df.to_csv(file_path, index=False)
+            print(f"    Saved Scalar as CSV: tables/{filename}")
+            
+        else:
+            print(f"    Warning: Unsupported data type {type(data)} for {filename}. Not saved.")
+            
+    except Exception as e:
+        print(f"    Error saving {filename}: {e}")
