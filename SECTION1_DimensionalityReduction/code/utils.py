@@ -10,10 +10,10 @@ import random
 import time
 from sklearn.linear_model import LinearRegression
 from scipy.linalg import eigh
-
-
-# --- 1. LOCATE THE RESULTS FOLDER ---
+from sklearn.metrics.pairwise import cosine_similarity
 import os
+
+
 
 
 def load_data(raw_filename='ratings.csv', sample_filename='ratings_cleaned_sampled.csv', table_name=None):
@@ -590,163 +590,25 @@ def calculate_full_covariance_sparse(centered_df):
 
 #Mady
 
-def get_top_peers(covariance_df, targets, k_list=[5, 10]):
-    peers_dict = {}
-    
-    for tid in targets:
-        if tid not in covariance_df.index:
-            print(f"Warning: Target {tid} not in covariance matrix.")
+def compute_latent_neighbors(n_comp, n_neighbors, all_items, target_list, evec_matrix):
+    """Find top-N similar items using cosine similarity in latent space."""
+    # Project to latent space
+    latent_repr = evec_matrix[:, :n_comp]
+    latent_frame = pd.DataFrame(latent_repr, index=all_items)
+
+    neighbor_dict = {}
+    for target in target_list:
+        if target not in latent_frame.index:
             continue
-            
-        # Get row for target
-        row = covariance_df.loc[tid]
-        
-        # Sort descending by covariance
-        # Drop self
-        sorted_peers = row.drop(tid).sort_values(ascending=False)
-        
-        peers_dict[tid] = {}
-        print(f"\n--- Target {tid} ---")
-        for k in k_list:
-            top_k = sorted_peers.head(k)
-            peers_dict[tid][k] = top_k.index.tolist()
-            print(f"Top {k} Peers: {top_k.index.tolist()}")
-            print(f"Values: {top_k.values}")
-            
-    return peers_dict
 
+        # Compute similarities
+        target_embedding = latent_frame.loc[target].values.reshape(1, -1)
+        similarities = cosine_similarity(target_embedding, latent_frame.values).flatten()
+        sim_scores = pd.Series(similarities, index=latent_frame.index).drop(target)
+        top_neighbors = sim_scores.sort_values(ascending=False)
 
-
-def solve_pca_regression(k, peers_map, centered_df, item_means, target_ids):
-    print(f"\n=== Processing K={k} Peers ===")
-    
-    predictions_all = {}
-    reduced_spaces = {}
-    
-    for tid in target_ids:
-        if tid not in peers_map:
-            continue
-            
-        peers = peers_map[tid][k]
-        print(f"\nTarget: {tid}, Peers: {peers}")
-        
-        # 1. Determine Reduced Dimensional Space
-        # Select columns for peers
-        # Note: centered_df_raw is strictly (User x Item). NaNs are missing ratings.
-        # We fill NaNs with 0.0 (Mean) for the feature matrix to allow regression on all users
-        X_full = centered_df[peers].fillna(0.0)
-        
-        reduced_spaces[tid] = X_full
-        print(f"Reduced Space Shape: {X_full.shape}")
-        
-        # 2. Prepare for Regression
-        # Target Variable (Centered)
-        y_full = centered_df[tid]
-        
-        # Identify Train (Rated) vs Predict (Unrated)
-        train_mask = y_full.notna()
-        predict_mask = y_full.isna()
-        
-        X_train = X_full[train_mask]
-        y_train = y_full[train_mask]
-        
-        X_pred = X_full[predict_mask]
-        
-        print(f"Training Samples: {len(X_train)}, Prediction Samples: {len(X_pred)}")
-        
-        # 3. Train Model
-        if len(X_train) > 0:
-            model = LinearRegression()
-            model.fit(X_train, y_train)
-            
-            # 4. Predict
-            # We predict for MISSING users
-            if len(X_pred) > 0:
-                y_pred_centered = model.predict(X_pred)
-                
-                # Add Mean to get Final Rating
-                target_mean = item_means[tid]
-                y_pred_final = y_pred_centered + target_mean
-                
-                # Store results
-                results_df = pd.DataFrame({
-                    'userId': X_pred.index,
-                    'movieId': tid,
-                    'predicted_rating_mle': y_pred_final
-                })
-                predictions_all[tid] = results_df
-                
-                # Save
-                save_csv(results_df, f"3.3_mle_predictions_k{k}_target_{tid}.csv")
-        else:
-            print("No training data available.")
-            
-    return reduced_spaces, predictions_all
-
-def calculate_mle_covariance(matrix_df):
-    """
-    Calculates the Pairwise Covariance Matrix (MLE).
-    Cov(i, j) = Sum( (R_ui - mu_i)*(R_uj - mu_j) ) / N_common
-    Only common users are used.
-    """
-    print("Computing MLE Covariance Matrix...")
-    
-    # Calculate Item Means (ignoring NaNs)
-    item_means = matrix_df.mean(axis=0)
-    
-    # Center data: R_ui - Mu_i
-    centered_df = matrix_df - item_means
-    
-    # Fill NaNs with 0 for dot product (0 contributes nothing to sum)
-    X = centered_df.fillna(0).values
-    
-    # Indicator Matrix: 1 if rated, 0 if not
-    I = (~matrix_df.isna()).astype(int).values
-    
-    # Numerator: Sum of products (X.T @ X)
-    # Element (i, j) is Sum((R_ui - mu_i)*(R_uj - mu_j)) for common users
-    print("- Calculating Numerator...")
-    numerator = np.dot(X.T, X)
-    
-    # Denominator: Count of intersections (I.T @ I)
-    # Element (i, j) is count of users who rated both i and j
-    print("- Calculating Denominator...")
-    denominator = np.dot(I.T, I)
-    
-    # Compute Covariance
-    print("- Dividing...")
-    with np.errstate(divide='ignore', invalid='ignore'):
-        cov_matrix = numerator / denominator
-        cov_matrix[denominator == 0] = 0
-        cov_matrix[np.isnan(cov_matrix)] = 0
-        
-    cov_df = pd.DataFrame(cov_matrix, index=matrix_df.columns, columns=matrix_df.columns)
-    return cov_df, item_means, centered_df
-
-def get_eigen_pairs(covariance_df):
-    evals, evecs = eigh(covariance_df.values)
-    sorted_indices = np.argsort(evals)[::-1]
-    evals = evals[sorted_indices]
-    evecs = evecs[:, sorted_indices]
-    return evals, evecs
-
-
-def predict_pca(k, matrix_df, item_means, eigenvectors, target_ids):
-    print(f"\n--- PCA with k={k} Components ---")
-    # Center data using standard logic (fill missing with mean -> 0)
-    data_centered = matrix_df.fillna(matrix_df.mean()).values - item_means.values
-    V_k = eigenvectors[:, :k]
-    
-    # Reduced Space
-    U_reduced = np.dot(data_centered, V_k)
-    print(f"Reduced Reduced Dimensional Space Shape: {U_reduced.shape}")
-    
-    results = {}
-    for tid in target_ids:
-        col_idx = matrix_df.columns.get_loc(tid)
-        target_vec = V_k[col_idx, :]
-        preds_centered = np.dot(U_reduced, target_vec)
-        preds = preds_centered + item_means.iloc[col_idx]
-        results[tid] = preds
-        
-    return U_reduced, results
+        neighbor_dict[target] = {
+            'top_ids': top_neighbors.head(n_neighbors).index.tolist(),
+            'sim_series': sim_scores
+        }
+    return neighbor_dict
