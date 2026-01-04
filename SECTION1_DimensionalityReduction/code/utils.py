@@ -12,6 +12,7 @@ from sklearn.linear_model import LinearRegression
 from scipy.linalg import eigh
 from sklearn.metrics.pairwise import cosine_similarity
 import os
+from scipy.sparse.linalg import svds
 
 
 
