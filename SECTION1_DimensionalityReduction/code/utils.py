@@ -13,7 +13,7 @@ from scipy.linalg import eigh
 from sklearn.metrics.pairwise import cosine_similarity
 import os
 
-# --- 1. LOCATE THE RESULTS FOLDER ---
+
 
 
 def load_data(raw_filename='ratings.csv', sample_filename='ratings_cleaned_sampled.csv', table_name=None):
