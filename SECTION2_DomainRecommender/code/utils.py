@@ -19,6 +19,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
+from scipy.sparse import csr_matrix, diags
 
 
 
@@ -277,3 +278,338 @@ def save_output(data, filename, columns=None, index_label='id'):
             
     except Exception as e:
         print(f"    Error saving {filename}: {e}")
+
+# =============================================================================
+# HYBRID RECOMENDER UTILITIES
+# =============================================================================
+
+def build_content_features(df_items):
+    """
+    Constructs the item feature matrix for Content-Based Filtering.
+    Combines TF-IDF on text descriptions, normalized price, and boolean is_green.
+    """
+    # 1. Text Features (TF-IDF)
+    tfidf = TfidfVectorizer(stop_words='english', max_features=100)
+    text_matrix = tfidf.fit_transform(df_items['text']).toarray()
+    
+    # 2. Metadata Features
+    scaler = MinMaxScaler()
+    price_vec = scaler.fit_transform(df_items[['price']])
+    green_vec = df_items[['is_green']].astype(int).values
+    
+    # 3. Combine
+    item_features = np.hstack([text_matrix, price_vec, green_vec])
+    return item_features
+
+def build_user_profiles(df_interactions, item_feats):
+    """
+    Constructs user profiles for Content-Based Filtering using weighted average
+    of rated item vectors.
+    """
+    user_profiles = {}
+    cold_start_vector = np.mean(item_feats, axis=0) # Fallback
+    
+    grouped = df_interactions.groupby('user_id')
+    for uid, group in grouped:
+        indices = group['item_id_encoded'].values.astype(int)
+        ratings = group['rating'].values.reshape(-1, 1)
+        
+        # Safe Indexing
+        valid_mask = indices < item_feats.shape[0]
+        indices = indices[valid_mask]
+        ratings = ratings[valid_mask]
+        
+        if len(indices) == 0:
+            user_profiles[uid] = cold_start_vector
+            continue
+            
+        vectors = item_feats[indices]
+        # Weighted Average Formula
+        weighted = np.sum(vectors * ratings, axis=0) / np.sum(ratings)
+        user_profiles[uid] = weighted
+        
+    return user_profiles, cold_start_vector
+
+def build_cf_matrix(df_subset, users, items, user_map, item_map):
+    """
+    Constructs a Sparse CSR Matrix for Collaborative Filtering.
+    """
+    row = df_subset['user_id'].map(user_map).values
+    col = df_subset['item_id_encoded'].map(item_map).values
+    data = df_subset['rating'].values
+    
+    # Filter out NaNs if any map failed (shouldn't happen if users/items are synced)
+    valid = ~np.isnan(row) & ~np.isnan(col)
+    R = csr_matrix((data[valid], (row[valid], col[valid])), shape=(len(users), len(items)))
+    return R
+
+def get_centered_sim_matrix(R):
+    """
+    Computes User-Mean Centered Ratings and Item-Item Pearson Correlation Matrix.
+    """
+    # Mean centering
+    row_means = np.array(R.sum(axis=1)).flatten() / (np.diff(R.indptr) + 1e-9)
+    R_coo = R.tocoo()
+    R_centered = csr_matrix((R_coo.data - row_means[R_coo.row], (R_coo.row, R_coo.col)), shape=R.shape)
+    
+    # Cosine on centered data = Pearson
+    M = R_centered.T
+    # Normalize
+    norms = np.sqrt(np.array(M.power(2).sum(axis=1)).flatten()) + 1e-9
+    M_norm = diags(1/norms) @ M
+    
+    # Item-Item Similarity
+    sim_matrix = M_norm @ M_norm.T
+    return sim_matrix, row_means
+
+def predict_cb(uid, i_idx, profiles, item_feats, cold_vec, dynamic_profile=None):
+    """
+    Content-Based Prediction Score.
+    """
+    if dynamic_profile is not None:
+        profile = dynamic_profile
+    else:
+        profile = profiles.get(uid, cold_vec)
+
+    item_vec = item_feats[i_idx]
+    
+    # Cosine Similarity
+    score = np.dot(profile, item_vec) / (np.linalg.norm(profile) * np.linalg.norm(item_vec) + 1e-9)
+    
+    # Scaling to 1-5 Logic (Approximate)
+    # Cosine is -1 to 1. User ratings are 1 to 5.
+    # Simple mapping: 1 + 4 * similarity (clipped 0-1)
+    return 1 + 4 * max(0, score)
+
+def predict_cf(u_idx, i_idx, R, sim_matrix, user_means, dynamic_ratings=None, dynamic_mean=None):
+    """
+    Item-Based Collaborative Filtering Prediction Score.
+    """
+    sim_row = sim_matrix.getrow(i_idx)
+    
+    # Check if we are using dynamic user data (Cold Start Simulation)
+    if dynamic_ratings is not None:
+        # dynamic_ratings is a dict: {item_idx: rating}
+        # dynamic_mean is the mean of this user
+        u_mean = dynamic_mean
+        rated_indices = list(dynamic_ratings.keys())
+        # To fetch ratings, we just lookup in the dict
+    else:
+        u_mean = user_means[u_idx]
+        u_row = R.getrow(u_idx)
+        rated_indices = u_row.indices
+    
+    if len(rated_indices) == 0: return u_mean
+    
+    # Find neighbors that the user has rated
+    neighbors = sim_row.indices
+    scores = sim_row.data
+    
+    relevant_mask = np.isin(neighbors, rated_indices)
+    rel_indices = neighbors[relevant_mask]
+    rel_scores = scores[relevant_mask]
+    
+    if len(rel_indices) == 0: return u_mean
+    
+    # Retrieve user's ratings for these neighbors
+    if dynamic_ratings is not None:
+        current_ratings = np.array([dynamic_ratings[idx] for idx in rel_indices])
+    else:
+        # Optimizing sparse access
+        curr_ratings_dict = {k: v for k, v in zip(u_row.indices, u_row.data)}
+        current_ratings = np.array([curr_ratings_dict[idx] for idx in rel_indices])
+    
+    # Weighted Average of Deviations
+    num = np.sum(rel_scores * (current_ratings - u_mean))
+    den = np.sum(np.abs(rel_scores))
+    
+    if den == 0: return u_mean
+    
+    pred = u_mean + num/den
+    return max(1, min(5, pred))
+
+def hybrid_weighted(cb_score, cf_score, alpha):
+    """Weighted Hybrid Strategy"""
+    return alpha * cb_score + (1 - alpha) * cf_score
+
+def hybrid_switching(user_rating_count, cb_score, cf_score, threshold=10):
+    """Switching Hybrid Strategy"""
+    if user_rating_count >= threshold:
+        return cf_score
+    return cb_score
+
+def hybrid_cascade(cb_score, cf_score, cb_threshold=0.5):
+    """
+    Cascade Hybrid Strategy (Pointwise Simulation).
+    Stage 1: Filter by Content-Based Score.
+    Stage 2: If passed, Rank by Collaborative Filtering Score.
+    """
+    if cb_score < cb_threshold:
+        return 0.0
+    return cf_score
+
+# =============================================================================
+# EVALUATION & COLD START UTILITIES
+# =============================================================================
+
+def simulate_cold_start(df_interactions, min_ratings=20, n_users=20, n_ratings_list=[3, 5, 10]):
+    """
+    Selects users with > min_ratings. Creates masked profiles for them.
+    Returns:
+        scenarios: { user_id: { n: masked_df } }
+        ground_truth: { user_id: set_of_all_actual_liked_items }
+        sampled_users: list of user_ids
+    """
+    print("\n--- Simulating Cold-Start Scenarios ---")
+    
+    # 1. Select eligible users
+    user_counts = df_interactions['user_id'].value_counts()
+    eligible_users = user_counts[user_counts >= min_ratings].index.tolist()
+    
+    if len(eligible_users) > n_users:
+        sampled_users = random.sample(eligible_users, n_users)
+    else:
+        sampled_users = eligible_users
+        
+    scenarios = {}
+    ground_truth = {}
+    
+    for uid in sampled_users:
+        user_data = df_interactions[df_interactions['user_id'] == uid]
+        # Ground Truth: Items rated positively (rating >= 3.0)
+        actual_items = set(user_data[user_data['rating'] >= 3.0]['item_id_encoded'].values)
+        ground_truth[uid] = actual_items
+        
+        user_scenarios = {}
+        for n in n_ratings_list:
+            # Create a masked dataframe mimicking a user with only N ratings
+            if len(user_data) >= n:
+                masked = user_data.sample(n=n, random_state=42)
+                user_scenarios[n] = masked
+            else:
+                user_scenarios[n] = user_data.copy()
+        scenarios[uid] = user_scenarios
+        
+    print(f"Selected {len(sampled_users)} users for simulation.")
+    return scenarios, ground_truth, sampled_users
+
+def recommend_random(all_item_ids, k=10):
+    """Returns k random item IDs."""
+    return random.sample(list(all_item_ids), k)
+
+def recommend_popularity(df_interactions, top_k=10):
+    """Returns list of top K popular item_ids."""
+    return df_interactions['item_id_encoded'].value_counts().head(top_k).index.tolist()
+
+def evaluate_baselines_comparison(df_interactions, 
+                                  profiles_train, item_features, cold_vec_train, # CB Model
+                                  R_train, sim_train, means_train, # CF Model
+                                  user_map, item_map,
+                                  n_test_users=20):
+    """
+    Compares Best Hybrid (Weighted) vs Random vs Popularity vs Pure CB
+    using Leave-One-Out protocols on sampled users.
+    """
+    print("\n--- Running Baseline Comparison (Leave-One-Out) ---")
+    
+    # 1. Select Users with > 10 ratings 
+    user_counts = df_interactions['user_id'].value_counts()
+    eligible = user_counts[user_counts >= 20].index.tolist()
+    if len(eligible) > n_test_users:
+        test_users = random.sample(eligible, n_test_users)
+    else:
+        test_users = eligible
+        
+    all_items = set(df_interactions['item_id_encoded'].unique())
+    
+    # Results accumulators - Expanded for Analysis
+    metrics = {
+        'Random': {'HR@10': 0, 'HR@50': 0, 'HR@100': 0},
+        'Popularity': {'HR@10': 0, 'HR@50': 0, 'HR@100': 0},
+        'Pure CB': {'HR@10': 0, 'HR@50': 0, 'HR@100': 0},
+        'Weighted Hybrid': {'HR@10': 0, 'HR@50': 0, 'HR@100': 0}
+    }
+    
+    # Pre-compute Popularity (Global)
+    pop_items_global = recommend_popularity(df_interactions, top_k=200)
+    
+    for uid in test_users:
+        # User Data & Hidden Item
+        u_data = df_interactions[df_interactions['user_id'] == uid]
+        positive = u_data[u_data['rating'] >= 3.0]
+        if positive.empty: continue
+        hidden_item = positive.sample(1, random_state=42)['item_id_encoded'].values[0]
+        
+        # Candidate Set (Hidden + 500 Pop + 100 Random)
+        rated_items_set = set(u_data['item_id_encoded'].values)
+        rated_items_set.discard(hidden_item)
+        
+        candidates = list(set(list(set(pop_items_global[:500])) + [hidden_item] + list(set(recommend_random(all_items, 100)))))
+        
+        # Double check no duplicates
+        if len(candidates) != len(set(candidates)):
+             candidates = list(set(candidates))
+        
+        # --- SCORES ---
+        # 1. Random Scores (Simulated by shuffling)
+        rnd_cands = list(candidates)
+        random.shuffle(rnd_cands)
+        
+        # 2. Popularity Scores (Rank by freq)
+        pop_counts = df_interactions['item_id_encoded'].value_counts()
+        pop_scores = {cand: pop_counts.get(cand, 0) for cand in candidates}
+        
+        # 3. CB & Hybrid Scores
+        cb_scores = {}
+        cf_scores = {}
+        for cand in candidates:
+            c_idx = item_map.get(cand)
+            if c_idx is None: 
+                cb_scores[cand] = -1
+                cf_scores[cand] = 3.0
+                continue
+                
+            cb_scores[cand] = predict_cb(uid, c_idx, profiles_train, item_features, cold_vec_train)
+            
+            u_idx = user_map.get(uid)
+            if u_idx is not None:
+                cf_scores[cand] = predict_cf(u_idx, c_idx, R_train, sim_train, means_train)
+            else:
+                cf_scores[cand] = 3.0
+                
+        hyb_scores = {cand: hybrid_weighted(cb_scores[cand], cf_scores[cand], alpha=0.7) for cand in candidates}
+        
+        # --- RANKS ---
+        rank_rnd = rnd_cands.index(hidden_item) + 1
+        rank_pop = sorted(pop_scores, key=pop_scores.get, reverse=True).index(hidden_item) + 1
+        rank_cb = sorted(cb_scores, key=cb_scores.get, reverse=True).index(hidden_item) + 1
+        rank_hyb = sorted(hyb_scores, key=hyb_scores.get, reverse=True).index(hidden_item) + 1
+        
+        # Update Metrics
+        for method, rank in [('Random', rank_rnd), ('Popularity', rank_pop), ('Pure CB', rank_cb), ('Weighted Hybrid', rank_hyb)]:
+            if rank <= 10: metrics[method]['HR@10'] += 1
+            if rank <= 50: metrics[method]['HR@50'] += 1
+            if rank <= 100: metrics[method]['HR@100'] += 1
+            
+        print(f"UID: {uid} | Hidden: {hidden_item}")
+        print(f"  -> Ranks: Random={rank_rnd}, Pop={rank_pop}, CB={rank_cb}, Hybrid={rank_hyb}")
+
+    # Compile
+    final_data = []
+    n = len(test_users)
+    for method, res in metrics.items():
+        final_data.append({
+            'Method': method,
+            'Hit Rate @ 10': res['HR@10'] / n,
+            'Hit Rate @ 50': res['HR@50'] / n,
+            'Hit Rate @ 100': res['HR@100'] / n
+        })
+    
+    df_final = pd.DataFrame(final_data).sort_values(by='Hit Rate @ 10', ascending=False)
+    
+    try:
+        save_csv(df_final, "baseline_comparison.csv")
+    except NameError:
+        print("Warning: save_csv function not found. Printing only.")
+        
+    return df_final
