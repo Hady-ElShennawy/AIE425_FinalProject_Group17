@@ -20,14 +20,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
-<<<<<<< HEAD
-import json
+import json                             
 import csv
 import seaborn as sns
-
-=======
 from scipy.sparse import csr_matrix, diags
->>>>>>> fd9fdf68e96e99ded029c6322a082ab61628bc20
 
 
 
