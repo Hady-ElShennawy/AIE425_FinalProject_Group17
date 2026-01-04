@@ -13,12 +13,16 @@ from scipy.linalg import eigh
 import re
 import nltk
 import os
+from sklearn.preprocessing import LabelEncoder
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
+import json                             
+import csv
+import seaborn as sns
 from scipy.sparse import csr_matrix, diags
 
 
