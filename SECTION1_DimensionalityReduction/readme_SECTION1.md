@@ -2,6 +2,11 @@
 
 This directory contains the implementation of dimensionality reduction techniques (PCA and SVD) applied to collaborative filtering using the MovieLens 20M dataset.
 
+## Dataset
+
+*   **Source**: [MovieLens Latest Datasets](https://grouplens.org/datasets/movielens/)
+*   **Download Link**: [ml-20m.zip](https://files.grouplens.org/datasets/movielens/ml-20m.zip)
+
 ## Directory Structure
 
 *   **`code/`**: Contains Jupyter notebooks and utility scripts for analysis.
