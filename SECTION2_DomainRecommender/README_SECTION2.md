@@ -3,6 +3,16 @@
 ## Overview
 This section focuses on building a domain-specific recommender system for Amazon "Health & Household" products. The system leverages both **Content-Based Filtering** (using item metadata and text descriptions) and **Collaborative Filtering** (using user-item interaction history) to provide personalized recommendations. It also explores **Hybrid** approaches to combine the strengths of both methods and address common challenges like the cold-start problem.
 
+## Dataset
+
+The project utilizes the **Amazon Reviews 2023** dataset, specifically focusing on the "Health & Household" category.
+
+*   **Source**: [Amazon Reviews 2023](https://amazon-reviews-2023.github.io/)
+*   **Reviews Data**: [Health_and_Household.jsonl.gz](https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/review_categories/Health_and_Household.jsonl.gz)
+*   **Metadata**: [meta_Health_and_Household.jsonl.gz](https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/meta_categories/meta_Health_and_Household.jsonl.gz)
+
+**Note**: The final dataset used in this project (`Amazon_health&household`) was created by merging the review data with the corresponding product metadata.
+
 ## Directory Structure
 
 ```text
